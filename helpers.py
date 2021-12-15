@@ -110,6 +110,9 @@ class Apply(ParseFormat):
         return self.f(data)
 
 
+Id = Apply(lambda x: x)
+
+
 class Map(ParseFormat):
     """ParseFormat created by doing `lhs ** rhs` between two ParseFormats, 
     or a ParseFormat and a simple mappable function.
@@ -189,4 +192,4 @@ fold along x=5
             folds=Lines() ** (Re('fold along $$=%%') % (str, int))
         ).parse(sample)
     print(s)
-test1()
+#test1()
