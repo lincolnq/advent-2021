@@ -1,5 +1,6 @@
 from typing import Callable
 import re
+import numpy
 
 class ParseFormat:
     def parse(self, data): ...
@@ -88,6 +89,31 @@ def Lines(delim='\n'):
     """It's just a Split on newline."""
     return Split(delim)
 
+
+class Matrix(ParseFormat):
+    """Splits on newline and assumes each character represents a separate cell.
+    Returns a numpy array of type either U1 (for unicode chars) or, if ints=True,
+    type int (for integers)."""
+    def __init__(self, ints=False) -> None:
+        super().__init__()
+        self.ints = ints
+
+    def parse(self, data) -> numpy.ndarray:
+        lines = data.strip().split('\n')
+        nrows = len(lines)
+        if self.ints:
+            arr = numpy.asarray([int(c) for row in lines for c in row], dtype=numpy.int_)
+            return arr.reshape((nrows, -1))
+        else:
+            arr = numpy.asarray(lines, dtype=numpy.unicode_)
+            return arr.view('U1').reshape((nrows, -1))
+
+def IntMatrix() -> Matrix:
+    return Matrix(ints=True)
+
+def CharMatrix() -> Matrix:
+    return Matrix(ints=False)
+
 class Tuple(Split):
     """Similar to Split on comma by default: First we split on the delim. 
     
@@ -126,7 +152,12 @@ class Map(ParseFormat):
     
     def parse(self, data):
         result = self.lhs.parse(data)
-        return [self.rhs.parse(item) for item in result]
+        if isinstance(result, numpy.ndarray):
+            # assume parse is broadcastable
+            return self.rhs.parse(result)
+        else:
+            # assume it's iterable
+            return [self.rhs.parse(item) for item in result]
 
 class Re(ParseFormat):
     """Regex pattern extracting a fixed number of things from a regex.
