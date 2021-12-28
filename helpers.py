@@ -163,7 +163,7 @@ class Re(ParseFormat):
     """Regex pattern extracting a fixed number of things from a regex.
     
     Every char is taken literally except for $$ (referring to a string token like \w+) 
-    and %% (referring to an integer numeric token like \d+).
+    and %% (referring to an integer numeric token like \-?\d+).
     """
     def __init__(self, simple_pat) -> None:
         super().__init__()
@@ -179,7 +179,7 @@ class Re(ParseFormat):
                 proper_matcher_regex += '(\w+)'
                 ngroups += 1
             elif m.group(0) == '%%':
-                proper_matcher_regex += '(\d+)'
+                proper_matcher_regex += '(\-?\d+)'
                 ngroups += 1
             startix = m.end()
         proper_matcher_regex += re.escape(simple_pat[startix:])
@@ -191,6 +191,8 @@ class Re(ParseFormat):
 
     def parse(self, data):
         m = self.re.match(data)
+        if not m:
+            raise Exception(f"Failed to parse using Re: {repr(data)}")
         return tuple(m.group(g + 1) for g in range(self.ngroups))
 
 def test1():
