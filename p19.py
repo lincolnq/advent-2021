@@ -62,7 +62,8 @@ parser = Split('\n\n') ** (
     ))
 
 rawscans = parser.parse(open('sample19b.txt').read())
-print(rawscans)
+#rawscans = parser.parse(open('in19.txt').read())
+#print(rawscans)
 
 # By convention, a BeaconPos is a 3d vector of ints.
 BeaconPos = numpy.ndarray
@@ -82,7 +83,56 @@ class Scan:
 
 
     # process2 helpers
-    beaconAxisDiffs: T.Optional[T.List[T.Set[int]]] = None
+    beaconDiffs: T.Dict[T.Tuple, T.Tuple[int,int]] = None
+
+
+@dataclass
+class AlignedScan:
+    scan: Scan
+
+    # the 3d matrix representing the orientation of the scanner
+    rot: numpy.ndarray
+    # the 3-vector representing the position of the scanner
+    pos: BeaconPos
+
+    # to produce the true origin position of a beacon scanned by this scanner,
+    # we multiply its position by rot and then add pos
+    def transformedBeacons(self) -> T.List[BeaconPos]:
+        result = []
+        for b in self.scan.beacons:
+            result.append(b @ self.rot + self.pos)
+        return result
+
+
+def allRots():
+    """Returns all 24 3d axis-aligned rotation matrices.
+    
+    Naively, you can compute that there are
+    3! orderings of the 3 axes, times each one can be 
+    positive or negative. But in fact some of these include
+    reflections too; we drop those by checking the determinant.
+    """
+    ident = numpy.identity(3, dtype=numpy.int32)
+    axis_orderings = [numpy.roll(ident, i, 0) for i in range(3)]
+    identswap = ident.copy()
+    identswap[[1,0]] = identswap[[0,1]]
+    axis_orderings.extend([numpy.roll(identswap, i, 0) for i in range(3)])
+
+    # ok, now we're going to negate each row of each of the 6 axis orderings
+    # this will produce all 48 orderings
+    reflections_and_rotations = axis_orderings
+    for axis in range(3):
+        negator = numpy.identity(3, dtype=numpy.int32)
+        negator[axis,axis] = -1
+        reflections_and_rotations.extend([r @ negator for r in reflections_and_rotations])
+
+    # now toss out the reflections (where det < 0)
+    reflections_and_rotations = [x for x in reflections_and_rotations if numpy.linalg.det(x) > 0]
+    
+    #for i,m in enumerate(reflections_and_rotations):
+    #    print(f"{i}:{m}")
+    
+    return reflections_and_rotations
 
 def mandist(a: BeaconPos, b: BeaconPos):
     """Manhattan distance between a and b"""
@@ -124,30 +174,80 @@ def preprocessScan(rawscan):
     beacons = [numpy.fromiter(v, dtype=int) for v in rawscan['body']]
     
     allBeaconPairs = [(a,b) for (ai, a) in enumerate(beacons) for b in beacons[ai+1:]]
-    sets = []
-    for axis in range(len(beacons[0])):
-        axisSet = set()
-        for (a,b) in allBeaconPairs:
-            axisSet.add(abs(b[axis] - a[axis]))
-        sets.append(axisSet)
+    #for axis in range(len(beacons[0])):
+
+    diffs = {}
+    for (a,b) in allBeaconPairs:
+        diffs[tuple(sorted(abs(b - a)))] = (a,b)
 
     return Scan(
         scanno=rawscan['title'][0],
         beacons=beacons,
-        beaconAxisDiffs=sets
+        beaconDiffs=diffs
     )
 
 
 scans = [preprocessScan(r) for r in rawscans]
-print(len(scans[0].beaconAxisDiffs))
-for ixs, scan1 in enumerate(scans):
-    for scan2 in scans[ixs+1:]:
-        intcs = []
-        for set1 in scan1.beaconAxisDiffs:
-            for set2 in scan2.beaconAxisDiffs:
-                intc = len(set1 & set2)
-                intcs.append(intc)
-        print(f"compare {scan1.scanno} vs {scan2.scanno}: ints={sorted(intcs)}")
+print(scans[0].beaconDiffs)
+
+print(len(scans[0].beaconDiffs))
+
+def alignScans(scans: T.List[Scan]) -> T.List[AlignedScan]:
+    scans = scans[:]
+    orig = scans.pop(0)
+    oaligned = AlignedScan(orig, numpy.identity(3, dtype=numpy.int32), numpy.zeros(3, dtype=numpy.int32))
+    aligned = [oaligned]
+
+    while len(scans):
+        (nextScanIx, alignerIx) = findNextToAlign(scans, aligned)
+        nextScan = scans.pop(nextScanIx)
+
+        naligned = alignScan(nextScan, aligned[alignerIx])
+        fail
+        assert naligned, "Failed to align?!"
+        aligned.append(naligned)
+    
+    return aligned
+
+def findNextToAlign(scans: T.List[Scan], alreadyAligned: T.List[AlignedScan]) -> T.Tuple[int, int]:
+    
+    for ixs, scan1 in enumerate(scans):
+        for ixa, ascan2 in enumerate(alreadyAligned):
+            intersection = scan1.beaconDiffs.keys() & ascan2.scan.beaconDiffs.keys()
+            print(f"compare {scan1.scanno} vs {ascan2.scan.scanno}: difflen={len(intersection)}")
+            if len(intersection) > 50:
+                # it's a good intersection, we can align these scans
+                return (ixs, ixa)
+    assert False, "Unable to align scans"
+
+
+def alignScan(scan: Scan, toAligned: AlignedScan) -> AlignedScan:
+    intersection = scan.beaconDiffs.keys() & toAligned.scan.beaconDiffs.keys()
+
+    while len(intersection):
+        # pick any intersection and try to align using it
+        k = intersection.pop()
+        (beacon1, beacon2), (anchor1, anchor2) = scan.beaconDiffs[k], toAligned.scan.beaconDiffs[k]
+        print(f"Aligning {scan.scanno} and {toAligned.scan.scanno}: {beacon1},{beacon2} to {anchor1, anchor2}")
+        # run through all the different rotation possibilities when aligning
+        for rot in allRots():
+            dpos = rot @ beacon1 - anchor1
+            tb2 = rot @ beacon2 + dpos
+            print(f"Try rot {rot}, dpos is {dpos}, transformed beacon2 is {tb2} (vs. {anchor2}) ")
+            if (rot @ beacon2 + dpos == anchor2).all():
+                #success!
+                print(f"Success!")
+                return AlignedScan(scan, rot, dpos)
+
+
+        fail
+        return None
+
+print(allRots())
+
+alignScans(scans)
+
+#def transform()
 
 
 #    print(s.fingerprint())
