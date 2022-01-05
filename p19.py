@@ -61,8 +61,8 @@ parser = Split('\n\n') ** (
         body=Lines() ** Tuple() ** int
     ))
 
-rawscans = parser.parse(open('sample19b.txt').read())
-#rawscans = parser.parse(open('in19.txt').read())
+#rawscans = parser.parse(open('sample19b.txt').read())
+rawscans = parser.parse(open('in19.txt').read())
 #print(rawscans)
 
 # By convention, a BeaconPos is a 3d vector of ints.
@@ -202,26 +202,31 @@ def alignScans(scans: T.List[Scan]) -> T.List[AlignedScan]:
 
     oaligned = AlignedScan(orig, numpy.identity(3, dtype=numpy.int32), numpy.zeros(3, dtype=numpy.int32))
     aligned = [oaligned]
-    skip = []
+    lastScans = 0
 
     while len(scans):
-        while len(scans):
-            
-            (nextScanIx, alignerIx) = findNextToAlign(scans, aligned)
-            nextScan = scans.pop(nextScanIx)
+        for (nextScanIx, alignerIx) in findNextToAlign(scans, aligned):
 
+            nextScan = scans[nextScanIx]
+
+            print(f"Attempt to align scan {nextScan.scanno}...")
             naligned = alignScan(nextScan, aligned[alignerIx])
             if naligned:
                 print(f"Aligned scan {nextScan.scanno} to the group! {naligned.pos} @ {naligned.rot}")
                 aligned.append(naligned)
-                #break
+                scans.pop(nextScanIx)
+                break
             else:
-                print(f"Skipping scan {nextScan.scanno} for now")
-                skip.append(nextScan)
+                print(f"Couldn't align {nextScan.scanno} and {aligned[alignerIx].scan.scanno}")
+                # skip.append(nextScan)
         
-        scans = skip
-        skip = []
+        if len(scans) == lastScans and lastScans > 0:
+            # we are looping
+            break
+            #assert False, "we ran out of things to align"
 
+        lastScans = len(scans)
+        
     return aligned
 
 def findNextToAlign(
@@ -245,13 +250,16 @@ def findNextToAlign(
                 bestDiff = len(intersection)
                 bestIxs = (ixs, ixa)
 
-    assert False, "unable to find an alignment"
-    #assert bestIxs is not None, "didn't have best ixs?!"
-    #if bestIxs:
-    #    yield bestIxs
+    #assert False, "unable to find an alignment"
+    assert bestIxs is not None, "didn't have best ixs?!"
+    if bestIxs:
+        yield bestIxs
 
 
 def alignScan(scan: Scan, toAligned: AlignedScan) -> AlignedScan:
+    if scan.scanno == 4 and toAligned.scan.scanno == 1:
+        #breakpoint()
+        pass
     intersection = scan.beaconDiffs.keys() & toAligned.scan.beaconDiffs.keys()
 
     def testAllAlignments(beacon1, beacon2, toAligned: AlignedScan, anchor1, anchor2) -> T.Optional[AlignedScan]:
@@ -264,7 +272,7 @@ def alignScan(scan: Scan, toAligned: AlignedScan) -> AlignedScan:
             # If target = self.transform(beacon1)
             #    target = beacon1 @ rot + self.pos
             # then we compute self.pos = target - beacon1 @ rot
-            selfpos = target - rot @ beacon1
+            selfpos = target - beacon1 @ rot
             # then we can try transforming beacon2 according to this and hope it is right
             testScan = AlignedScan(scan, rot, selfpos)
             tb2 = testScan.transform(beacon2)
@@ -286,6 +294,9 @@ def alignScan(scan: Scan, toAligned: AlignedScan) -> AlignedScan:
         # it takes to make beacon1 @ scan1 come out to anchor1 @ toAligned
         print(f"Aligning {scan.scanno} and {toAligned.scan.scanno}: {beacon1},{beacon2} to {anchor1, anchor2}")
 
+        #if beacon1[2] == 682:
+        #    breakpoint()
+
         result = (
                testAllAlignments(beacon1, beacon2, toAligned, anchor1, anchor2)
             or testAllAlignments(beacon2, beacon1, toAligned, anchor1, anchor2)
@@ -300,3 +311,12 @@ for ascan in alignedScans:
     allBeacons.update(tuple(x) for x in ascan.transformedBeacons())
 
 print(f"Aligned {len(alignedScans)} scans with {len(allBeacons)} unique beacons")
+
+bestdist = 0
+for s1 in alignedScans:
+    for s2 in alignedScans:
+        md = mandist(s2.pos, s1.pos)
+        if md > bestdist:
+            print(f"New bestdist is {md}")
+            bestdist = md
+
