@@ -97,10 +97,13 @@ class AlignedScan:
 
     # to produce the true origin position of a beacon scanned by this scanner,
     # we multiply its position by rot and then add pos
+    def transform(self, pos: BeaconPos) -> BeaconPos:
+        return pos @ self.rot + self.pos
+
     def transformedBeacons(self) -> T.List[BeaconPos]:
         result = []
         for b in self.scan.beacons:
-            result.append(b @ self.rot + self.pos)
+            result.append(self.transform(b))
         return result
 
 
@@ -195,59 +198,105 @@ print(len(scans[0].beaconDiffs))
 def alignScans(scans: T.List[Scan]) -> T.List[AlignedScan]:
     scans = scans[:]
     orig = scans.pop(0)
+    print(f"starting with scan {orig.scanno} to the group!")
+
     oaligned = AlignedScan(orig, numpy.identity(3, dtype=numpy.int32), numpy.zeros(3, dtype=numpy.int32))
     aligned = [oaligned]
+    skip = []
 
     while len(scans):
-        (nextScanIx, alignerIx) = findNextToAlign(scans, aligned)
-        nextScan = scans.pop(nextScanIx)
+        while len(scans):
+            
+            (nextScanIx, alignerIx) = findNextToAlign(scans, aligned)
+            nextScan = scans.pop(nextScanIx)
 
-        naligned = alignScan(nextScan, aligned[alignerIx])
-        fail
-        assert naligned, "Failed to align?!"
-        aligned.append(naligned)
-    
+            naligned = alignScan(nextScan, aligned[alignerIx])
+            if naligned:
+                print(f"Aligned scan {nextScan.scanno} to the group! {naligned.pos} @ {naligned.rot}")
+                aligned.append(naligned)
+                #break
+            else:
+                print(f"Skipping scan {nextScan.scanno} for now")
+                skip.append(nextScan)
+        
+        scans = skip
+        skip = []
+
     return aligned
 
-def findNextToAlign(scans: T.List[Scan], alreadyAligned: T.List[AlignedScan]) -> T.Tuple[int, int]:
+def findNextToAlign(
+    scans: T.List[Scan], 
+    alreadyAligned: T.List[AlignedScan]
+    ) -> T.Iterable[T.Tuple[int, int]]:
+    """Search for a plausible pair of indexes in `scans` and `alreadyAligned`
+    to align. Iterable, in case the alignment fails you can try again!"""
     
+    bestDiff = 0
+    bestIxs = None
+
     for ixs, scan1 in enumerate(scans):
         for ixa, ascan2 in enumerate(alreadyAligned):
             intersection = scan1.beaconDiffs.keys() & ascan2.scan.beaconDiffs.keys()
             print(f"compare {scan1.scanno} vs {ascan2.scan.scanno}: difflen={len(intersection)}")
             if len(intersection) > 50:
-                # it's a good intersection, we can align these scans
-                return (ixs, ixa)
-    assert False, "Unable to align scans"
+                # it's a good intersection, we can stop searching and just align these scans
+                yield (ixs, ixa)
+            elif len(intersection) > bestDiff:
+                bestDiff = len(intersection)
+                bestIxs = (ixs, ixa)
+
+    assert False, "unable to find an alignment"
+    #assert bestIxs is not None, "didn't have best ixs?!"
+    #if bestIxs:
+    #    yield bestIxs
 
 
 def alignScan(scan: Scan, toAligned: AlignedScan) -> AlignedScan:
     intersection = scan.beaconDiffs.keys() & toAligned.scan.beaconDiffs.keys()
 
-    while len(intersection):
+    def testAllAlignments(beacon1, beacon2, toAligned: AlignedScan, anchor1, anchor2) -> T.Optional[AlignedScan]:
+        # run through all the different rotation possibilities when aligning
+        target = toAligned.transform(anchor1)
+
+        for rot in allRots():
+            # ok, so we assume 'rot' is correct. we assume that beacon1 and anchor1
+            # correspond, i.e., `target` is the True Position of beacon1.
+            # If target = self.transform(beacon1)
+            #    target = beacon1 @ rot + self.pos
+            # then we compute self.pos = target - beacon1 @ rot
+            selfpos = target - rot @ beacon1
+            # then we can try transforming beacon2 according to this and hope it is right
+            testScan = AlignedScan(scan, rot, selfpos)
+            tb2 = testScan.transform(beacon2)
+            if (tb2 == toAligned.transform(anchor2)).all():
+                #success!
+                print(f"Success!")
+                return testScan
+
+    result = None
+
+    while len(intersection) and result is None:
         # pick any intersection and try to align using it
         k = intersection.pop()
         (beacon1, beacon2), (anchor1, anchor2) = scan.beaconDiffs[k], toAligned.scan.beaconDiffs[k]
+
+        # ok, we assume that (beacon1,beacon2)=(anchor1,anchor2) or vice versa
+        
+        # e.g. if beacon1=anchor1 then scan's alignment needs to be whatever
+        # it takes to make beacon1 @ scan1 come out to anchor1 @ toAligned
         print(f"Aligning {scan.scanno} and {toAligned.scan.scanno}: {beacon1},{beacon2} to {anchor1, anchor2}")
-        # run through all the different rotation possibilities when aligning
-        for rot in allRots():
-            dpos = rot @ beacon1 - anchor1
-            tb2 = rot @ beacon2 + dpos
-            print(f"Try rot {rot}, dpos is {dpos}, transformed beacon2 is {tb2} (vs. {anchor2}) ")
-            if (rot @ beacon2 + dpos == anchor2).all():
-                #success!
-                print(f"Success!")
-                return AlignedScan(scan, rot, dpos)
 
+        result = (
+               testAllAlignments(beacon1, beacon2, toAligned, anchor1, anchor2)
+            or testAllAlignments(beacon2, beacon1, toAligned, anchor1, anchor2)
+        )
 
-        fail
-        return None
+    return result
 
-print(allRots())
+alignedScans = alignScans(scans)
 
-alignScans(scans)
+allBeacons = set()
+for ascan in alignedScans:
+    allBeacons.update(tuple(x) for x in ascan.transformedBeacons())
 
-#def transform()
-
-
-#    print(s.fingerprint())
+print(f"Aligned {len(alignedScans)} scans with {len(allBeacons)} unique beacons")
